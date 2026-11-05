@@ -3,24 +3,24 @@
 # All values are static; there is no .env file and no interpolation.
 #
 # The app key ships as a file-backed secret from
-# /srv/secrets/multi-runner/github-app.pem (owner root, mode 0600;
+# /srv/secrets/runner/github-app.pem (owner root, mode 0600;
 # procedure in README Part 2).
-# CLIENT_ID and INSTALLATION_ID are placeholders until the GitHub App exists;
-# replace them with the real values before starting the fleet
-# (procedure in README Part 2).
+# CLIENT_ID and INSTALLATION_ID are placeholders for the dhuseby
+# GitHub App; replace them with the real values before starting the
+# fleet (procedure in README Part 2).
 # ────────────────────────────────────────────────────────────────
 
 secrets:
   github_app_key:
-    file: /srv/secrets/multi-runner/github-app.pem
+    file: /srv/secrets/runner/github-app.pem
 
 # Shared shape for every runner service. The compose client mounts the secret
-# read-only at /run/secrets/github_app_key. memory-limit 3g plus a swap
+# read-only at /run/secrets/github_app_key. memory-limit 2g plus a swap
 # allowance up to 6g turns a rare compile-memory spike into a slowdown
 # instead of an oom-kill. security_opt disables SELinux/MCS labeling so the
 # runner can drive the host Docker CLI through the mounted socket.
 x-runner-common: &runner-common
-  image: ghcr.io/cryptidtech/multi-runner:latest
+  image: ghcr.io/dhuseby/runner:latest
   restart: unless-stopped
   secrets:
     - github_app_key
@@ -38,115 +38,43 @@ x-runner-common: &runner-common
 # for those exist.
 x-runner-env: &runner-env
   RUNNER_SCOPE: 'repo'
-  CLIENT_ID: 'Iv23litJSwRvnOrbxOZI'
-  INSTALLATION_ID: '179023609'
+  CLIENT_ID: 'Iv1.0000000000000000'
+  INSTALLATION_ID: '0000000'
   LABELS: 'self-hosted,linux,x64,ephemeral'
 
 services:
-  multi-base:
+  cruzr:
     <<: *runner-common
-    container_name: multi-base-r1
+    container_name: cruzr-r1
     environment:
       <<: *runner-env
-      RUNNER_NAME: multi-base-r1
-      REPO_URL: https://github.com/cryptidtech/multi-base
+      RUNNER_NAME: cruzr-r1
+      REPO_URL: https://github.com/dhuseby/cruzr
 
-  multi-cbor:
+  denyfs:
     <<: *runner-common
-    container_name: multi-cbor-r1
+    container_name: denyfs-r1
     environment:
       <<: *runner-env
-      RUNNER_NAME: multi-cbor-r1
-      REPO_URL: https://github.com/cryptidtech/multi-cbor
+      RUNNER_NAME: denyfs-r1
+      REPO_URL: https://github.com/dhuseby/denyfs
 
-  multi-cid:
+  gold-vault:
     <<: *runner-common
-    container_name: multi-cid-r1
+    container_name: gold-vault-r1
     environment:
       <<: *runner-env
-      RUNNER_NAME: multi-cid-r1
-      REPO_URL: https://github.com/cryptidtech/multi-cid
+      RUNNER_NAME: gold-vault-r1
+      REPO_URL: https://github.com/dhuseby/gold-vault
 
-  multi-codec:
+  wide-log:
     <<: *runner-common
-    container_name: multi-codec-r1
+    container_name: wide-log-r1
     environment:
       <<: *runner-env
-      RUNNER_NAME: multi-codec-r1
-      REPO_URL: https://github.com/cryptidtech/multi-codec
+      RUNNER_NAME: wide-log-r1
+      REPO_URL: https://github.com/dhuseby/wide-log
 
-  multi-hash:
-    <<: *runner-common
-    container_name: multi-hash-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-hash-r1
-      REPO_URL: https://github.com/cryptidtech/multi-hash
-
-  multi-key:
-    <<: *runner-common
-    container_name: multi-key-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-key-r1
-      REPO_URL: https://github.com/cryptidtech/multi-key
-
-  multi-sig:
-    <<: *runner-common
-    container_name: multi-sig-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-sig-r1
-      REPO_URL: https://github.com/cryptidtech/multi-sig
-
-  multi-trait:
-    <<: *runner-common
-    container_name: multi-trait-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-trait-r1
-      REPO_URL: https://github.com/cryptidtech/multi-trait
-
-  multi-util:
-    <<: *runner-common
-    container_name: multi-util-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-util-r1
-      REPO_URL: https://github.com/cryptidtech/multi-util
-
-  multi-vlad:
-    <<: *runner-common
-    container_name: multi-vlad-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: multi-vlad-r1
-      REPO_URL: https://github.com/cryptidtech/multi-vlad
-
-  provenance-log:
-    <<: *runner-common
-    container_name: provenance-log-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: provenance-log-r1
-      REPO_URL: https://github.com/cryptidtech/provenance-log
-
-  wacc:
-    <<: *runner-common
-    container_name: wacc-r1
-    environment:
-      <<: *runner-env
-      RUNNER_NAME: wacc-r1
-      REPO_URL: https://github.com/cryptidtech/wacc
-
-  # To add a repo: install the GitHub App on that repo, add or uncomment a
+  # To add a repo: install the dhuseby GitHub App on that repo, add a
   # service block of this shape, and run docker compose up -d. The full
-  # procedure is README Part 5. multi-proof stays commented out until the
-  # repo is pushed:
-  # multi-proof:
-  #   <<: *runner-common
-  #   container_name: multi-proof-r1
-  #   environment:
-  #     <<: *runner-env
-  #     RUNNER_NAME: multi-proof-r1
-  #     REPO_URL: https://github.com/cryptidtech/multi-proof
+  # procedure is README Part 5.
