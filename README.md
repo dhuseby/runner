@@ -1,17 +1,13 @@
-# multi-runner — Dockerized GitHub Actions runner fleet
+# runner — Dockerized GitHub Actions runner fleet
 
-This repo runs a self-hosted GitHub Actions runner fleet for the `cryptidtech` Rust crates.
-One container runs one repo. The fleet serves ten repos today:
+This repo runs a self-hosted GitHub Actions runner fleet for the `dhuseby` Rust
+repos. One container runs one repo. The fleet serves four repos today:
 
-`multi-base`, `multi-cbor`, `multi-cid`, `multi-codec`, `multi-hash`, `multi-key`,
-`multi-sig`, `multi-trait`, `multi-util`, `multi-vlad`
-
-`multi-proof` joins on push with a commented service block in `docker-compose.yaml`.
-`multi-proof-plans` holds documents only and runs nothing.
+`cruzr`, `denyfs`, `gold-vault`, `wide-log`
 
 ## How it works
 
-- Each repo gets one runner container. The name pattern is `multi-<name>-r1`.
+- Each repo gets one runner container. The name pattern is `<name>-r1`.
   The fixed `-r1` suffix leaves room for an `-r2` replica of a busy repo later.
 - The container registers an ephemeral runner, runs one job, exits, and the
   `restart: unless-stopped` policy starts it again for the next job.
@@ -20,19 +16,26 @@ One container runs one repo. The fleet serves ten repos today:
   signs a 9-minute JWT that carries the client ID as the issuer and sets the
   issue time 60 seconds in the past for clock drift, exchanges it for a 1-hour
   installation token, and exchanges that for a registration token.
-- The app key lives at `/srv/secrets/multi-runner/github-app.pem` on the build
+- The app key lives at `/srv/secrets/runner/github-app.pem` on the build
   machine and reaches each container as the compose secret
   `/run/secrets/github_app_key`.
+- Each container mounts the host Docker socket at `/var/run/docker.sock`, so
+  jobs can run `docker` commands against the host daemon. Jobs must not run
+  `docker compose down` or `docker rm`: the daemon they reach is the one that
+  runs the runner fleet itself (see Part 6).
 - Four caches live on `/srv/cache` and are shared by all runners:
   the cargo registry at `/srv/cache/cargo`, one build directory per runner at
   `/srv/cache/cargo-target/<runner-name>`, the sccache object cache at
   `/srv/cache/sccache`, and the Docker image cache at `/srv/cache/docker`.
   Dependency compilations run through sccache, so an object compiled for one
-  repo serves every other repo.
-- Each container holds a 3 GB memory cap and may use swap up to 3 GB more
-  (`mem_limit: '3g'`, `memswap_limit: '6g'`). The 128 GB swap partition absorbs
-  a rare compile-memory spike. Ten containers are the right fleet size for the
-  four-core build machine. Add an eleventh when `multi-proof` is pushed.
+  repo serves every other repo. All caches start empty on the new server:
+  the registry, the build directories, sccache, and the Docker layer cache
+  warm up from the first jobs.
+- Each container holds a 2 GB memory cap and may use swap up to 4 GB more
+  (`mem_limit: '2g'`, `memswap_limit: '6g'`). The 128 GB swap partition absorbs
+  a rare compile-memory spike. Four containers are the right fleet size for
+  the four-core build machine, with room for replicas up to the
+  about-twelve cap.
 
 ## Prerequisites
 
@@ -52,8 +55,8 @@ Set the host swappiness to 10, because swap and `/srv/cache` share the same
 M.2 device. Low swappiness keeps steady-state work in RAM:
 
 ```bash
-printf 'vm.swappiness=10\n' | sudo tee /etc/sysctl.d/90-multi-runner-swappiness.conf
-sudo sysctl -p /etc/sysctl.d/90-multi-runner-swappiness.conf
+printf 'vm.swappiness=10\n' | sudo tee /etc/sysctl.d/90-runner-swappiness.conf
+sudo sysctl -p /etc/sysctl.d/90-runner-swappiness.conf
 sysctl vm.swappiness
 ```
 
@@ -63,18 +66,20 @@ You also need `git` with GPG signing configured for the commits in Part 6.
 
 ## Part 1 — Create and configure the GitHub App
 
-Do this as a `cryptidtech` organization administrator.
+This fleet runs under your personal `dhuseby` account, so the app is a
+user-owned GitHub App. Do this from that account's GitHub session.
 
 > This part is the prerequisite for everything else. The compose file carries
 > placeholder identity numbers until Part 1 is complete.
 
-1. On GitHub, open the organization page, then `Settings`, then
-   `Developer settings`, then `GitHub Apps`, then `New GitHub App`.
-2. Name the app, for example `cryptidtech-runners`, and set the homepage URL
-   to any reachable page, for example the organization page.
-3. Clear the callback URL, the webhook URL, and the user authorization options.
-   This app is a machine identity. It makes API calls itself and impersonates
-   no user.
+1. On GitHub, open your account `Settings`, then `Developer settings`, then
+   `GitHub Apps`, then `New GitHub App` (direct link:
+   `https://github.com/settings/apps/new`).
+2. Name the app, for example `dhuseby-runners`, and set the homepage URL
+   to any reachable page, for example your profile page.
+3. Clear the callback URL, the webhook URL and its `Active` flag, and the
+   user authorization options. This app is a machine identity. It makes API
+   calls itself and impersonates no user.
 4. Under `Repository permissions`, set `Administration` to `Read and write`.
    Do not grant any other permission. The runner uses this permission to
    register itself and nothing else.
@@ -86,12 +91,12 @@ Do this as a `cryptidtech` organization administrator.
 8. On the app settings page, record the `Client ID`. The compose file needs it.
    GitHub recommends the client ID, not the numeric `App ID`, as the JWT
    issuer.
-9. Click `Install App`, select the `cryptidtech` organization, choose
-   `Only select repositories`, and select the ten repos:
-   `multi-base`, `multi-cbor`, `multi-cid`, `multi-codec`, `multi-hash`,
-   `multi-key`, `multi-sig`, `multi-trait`, `multi-util`, `multi-vlad`.
-10. Record the numeric `Installation ID`. It shows in the installation URL:
-    `https://github.com/organizations/cryptidtech/settings/installations/<ID>`.
+9. Click `Install App`, select the `dhuseby` account, choose
+   `Only select repositories`, and select the four repos:
+   `cruzr`, `denyfs`, `gold-vault`, `wide-log`.
+10. Record the numeric `Installation ID`. For a user installation it shows in
+    the installation URL:
+    `https://github.com/settings/installations/<ID>`.
 
 ## Part 2 — Place the app key on the build machine
 
@@ -102,14 +107,14 @@ A committed key is a security incident. If it ever happens, rotate the key
 
 1. Create the secret directory on the build machine:
    ```bash
-   sudo mkdir -p /srv/secrets/multi-runner
+   sudo mkdir -p /srv/secrets/runner
    ```
 2. Copy the downloaded `.pem` into it and set owner and mode:
    ```bash
-   sudo cp ~/Downloads/<app>.<DATE>.private-key.pem /srv/secrets/multi-runner/github-app.pem
-   sudo chown root:root /srv/secrets/multi-runner/github-app.pem
-   sudo chmod 0600 /srv/secrets/multi-runner/github-app.pem
-   ls -l /srv/secrets/multi-runner/github-app.pem
+   sudo cp ~/Downloads/<app>.<DATE>.private-key.pem /srv/secrets/runner/github-app.pem
+   sudo chown root:root /srv/secrets/runner/github-app.pem
+   sudo chmod 0600 /srv/secrets/runner/github-app.pem
+   ls -l /srv/secrets/runner/github-app.pem
    ```
    The last line must show `-rw-------` with owner `root root`. Then delete
    the downloaded copy from `~/Downloads`, so the key exists only at the
@@ -133,7 +138,7 @@ A committed key is a security incident. If it ever happens, rotate the key
 The image push needs a separate personal access token. This token never enters
 the runner path. It exists only for the push steps here.
 
-1. On GitHub, create a token that can write org packages, and put it in the
+1. On GitHub, create a token that can write packages, and put it in the
    `GHCR_TOKEN` environment variable for the session only. Never place it in
    the repo or an `.env` file. Two token kinds work:
    - A classic PAT with the `write:packages` scope. Check the token and its
@@ -144,33 +149,30 @@ the runner path. It exists only for the push steps here.
      ```
      The first call must return `200`; the second must show `write:packages`
      in the list. Fine-grained tokens print no scope list.
-   - A fine-grained PAT with `cryptidtech` as the resource owner and
-     `Packages` set to Read and write. The org must allow fine-grained tokens
-     under org `Settings`, then `Personal access token policy`. Fine-grained
-     tokens authenticate only with the `Bearer` scheme; the `token` scheme
-     returns 401.
-   Tokens are user-owned. Your membership in `cryptidtech` lets the push
-   create the org package.
+   - A fine-grained PAT with `dhuseby` as the resource owner and `Packages`
+     set to Read and write. Fine-grained tokens authenticate only with the
+     `Bearer` scheme; the `token` scheme returns 401.
+   Tokens are user-owned. The push with this token creates the package under
+   your account.
 2. From the repo directory, log in from the environment variable and build:
    ```bash
    echo "${GHCR_TOKEN}" | docker login ghcr.io -u <github-username> --password-stdin
-   docker build -t ghcr.io/cryptidtech/multi-runner:latest .
+   docker build -t ghcr.io/dhuseby/runner:latest .
    ```
    The username is the GitHub account that owns the token. Always pass the
    token through `--password-stdin`: a password on the command line lands in
-   the shell history and the process list. The build takes a few minutes. It
-   compiles the pinned Rust toolchains, `cargo-llvm-cov`, and `cargo-audit`
-   into image layers.
+   the shell history and the process list. The build takes tens of minutes.
+   It compiles the pinned Rust toolchains and the `cargo-deny`, `cargo-fuzz`,
+   and `cargo-audit` binaries into image layers.
 3. Push the image:
    ```bash
-   docker push ghcr.io/cryptidtech/multi-runner:latest
+   docker push ghcr.io/dhuseby/runner:latest
    ```
-   The first push creates the `multi-runner` package under `cryptidtech`. If
-   the push is denied, an org owner must allow package creation for members
-   under org `Settings`, then `Packages`.
+   The first push creates the `runner` package under `dhuseby`. If the push
+   is denied, re-check the token scope and that `docker login ghcr.io` used
+   the token's account.
 4. If other machines must pull the image, change the package visibility to
-   public in the org `Settings` under `Packages`, or run
-   `docker login ghcr.io` there first.
+   public on the package page, or run `docker login ghcr.io` there first.
 5. Log out when the push is done:
    ```bash
    docker logout ghcr.io
@@ -182,17 +184,17 @@ the runner path. It exists only for the push steps here.
 Before the first start, make sure Part 2 is complete: the key file exists and
 the two identity values hold real values.
 
-1. From the repo directory, start all ten containers:
+1. From the repo directory, start all four containers:
    ```bash
    docker compose up -d
    ```
-2. Check that ten containers are up:
+2. Check that four containers are up:
    ```bash
    docker compose ps
    ```
 3. Follow one runner's registration output:
    ```bash
-   docker compose logs -f multi-base
+   docker compose logs -f cruzr
    ```
    Expect these lines in order: `Minting the App JWT (9-minute window)...`,
    `Requesting the installation access token...`,
@@ -207,8 +209,8 @@ the two identity values hold real values.
    docker compose down
    ```
 
-Ten idle containers use almost no CPU. Each sits near zero use under its
-3 GB limit. After a job finishes, the container exits and compose starts a
+Four idle containers use almost no CPU. Each sits near zero use under its
+2 GB limit. After a job finishes, the container exits and compose starts a
 fresh copy, which registers again with a fresh token.
 
 A quick `docker compose down` followed by `docker compose up -d` can print
@@ -222,8 +224,8 @@ step in the GitHub UI.
 
 Registration is automatic. After Part 4, each repo shows one runner in the
 GitHub UI: open the repo, then `Settings`, then `Actions`, then `Runners`.
-Look for `multi-<name>-r1` with the status `Idle` or `Online`, and the labels
-`self-hosted`, `linux`, `x64`, `ephemeral`.
+Look for `<name>-r1`, for example `cruzr-r1`, with the status `Idle` or
+`Online`, and the labels `self-hosted`, `linux`, `x64`, `ephemeral`.
 
 The entrypoint registers with `--replace`. On every restart the new
 registration replaces any stuck old registration, so a restarted runner does
@@ -231,13 +233,13 @@ not strand an `Offline` entry in the UI.
 
 ### Add a repo
 
-1. Push the new repo to the `cryptidtech` org.
+1. Push the new repo to the `dhuseby` account.
 2. On the app installation page, add the repo to `Repository access`. The
    existing Installation ID stays valid.
-3. Add or uncomment a service block in `docker-compose.yaml`. Copy the shape
-   of an existing block. Set a unique `container_name` and `RUNNER_NAME`, and
-   set `REPO_URL` to the new repo. The commented `multi-proof` block shows the
-   full shape.
+3. Add a service block in `docker-compose.yaml`, following the
+   `x-runner-common` and `x-runner-env` anchor shape of the existing blocks.
+   Set a unique `container_name` and `RUNNER_NAME`, and set `REPO_URL` to the
+   new repo. The name pattern is `<name>-r1`.
 4. Run `docker compose up -d`.
 5. Add the workflow file from Part 6.
 
@@ -256,67 +258,114 @@ not strand an `Offline` entry in the UI.
 Do not merge workflow changes until the runners are online. A workflow job
 with no matching runner queues forever.
 
-In each sibling repo, open `.github/workflows/rust.yml` and change the runner
-selection:
+The image carries the toolchains and binaries the workflows use: `stable` as
+the default with `rustfmt` and `clippy`, the pinned `1.99.1`, `nightly` with
+`miri`, and the `cargo-deny`, `cargo-fuzz`, and `cargo-audit` binaries. A
+job-time `rustup toolchain install 1.99.1` is a no-op. When a toolchain
+release drifts past the image, the first affected job downloads the new one
+(see Operations).
+
+Guard any `cargo install` step. The image already carries the tools, so the
+guard turns a minute-long compile into a fast check:
 
 ```diff
--    runs-on: ubuntu-latest
-+    runs-on: [self-hosted, linux, x64]
+-        run: cargo install <tool>
++        run: command -v <tool> >/dev/null 2>&1 || cargo install <tool>
 ```
 
-Leave the `dtolnay/rust-toolchain` steps unchanged. The image carries the
-toolchains the workflows request: `stable` with `rustfmt`, `clippy`, and
-`llvm-tools-preview`, the pinned `1.99.0`, and `nightly` with the
-`thumbv6m-none-eabi` target. When a toolchain release drifts past the image,
-the first affected job downloads the new one (see Operations). Keep the
-`cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features
--- -D warnings`, and `cargo test --verbose --all-features` steps unchanged.
+> Every `docker` command in a job acts on the host daemon through the mounted
+> socket. Never run `docker compose down` or `docker rm` from inside a runner
+> job: the daemon it reaches also runs the runner fleet itself.
 
-Guard the two `cargo install` steps. The image already carries both tools, so
-the guard turns a minute-long compile into a fast check:
+### Case A — repos without CI: cruzr, denyfs, gold-vault
 
-```diff
--        run: cargo install cargo-llvm-cov
-+        run: command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov
+These three repos currently return public HTTP 404: push them to
+`github.com/dhuseby` or change their visibility first. The app installation
+and the runner registration both need a reachable repo.
+
+Create `.github/workflows/rust.yml` in each repo from this template:
+
+```yaml
+name: rust
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fmt:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all -- --check
+  clippy:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+  build:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --workspace --all-features --locked
+  test:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --all-features --locked
+  audit:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --locked
+      - run: cargo audit
 ```
 
-```diff
--        run: cargo install cargo-audit
-+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit
+Add an MSRV job only to `denyfs` and `gold-vault` — their manifests pin
+`rust-version = "1.99.1"`:
+
+```yaml
+  msrv:
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo +1.99.1 check --all-features --locked
 ```
 
-### A workflow for a repo without CI
+The template needs no toolchain install or setup steps: the image already
+carries everything the jobs call, and every job runs on the shared caches.
 
-Use the `multi-base` `.github/workflows/rust.yml` as the template, and name
-the file `rust.yml`. Its five jobs:
+### Case B — wide-log: edit the existing workflows
 
-- a build job with the fmt, clippy, build, and test steps
-- an MSRV job that runs `cargo check --all-features` on the pinned `1.99.0`
-  toolchain
-- an `ensure_no_std` job that builds for `thumbv6m-none-eabi` on nightly
-- a coverage job that runs `cargo llvm-cov --workspace` with
-  `llvm-tools-preview` and uploads `lcov.info` through Codecov
-- an audit job
+`wide-log` already carries `.github/workflows/ci.yml` and
+`.github/workflows/rust.yml`. Edit both:
 
-Keep `runs-on: [self-hosted, linux, x64]` on every job.
+1. Switch the runner selection in every job:
 
-### The multi-proof steps
+   ```diff
+   -    runs-on: ubuntu-latest
+   +    runs-on: [self-hosted, linux, x64]
+   ```
 
-1. Create `.github/workflows/rust.yml` in `multi-proof` from the `multi-base`
-   template with the build, MSRV, coverage, and audit jobs. Omit the
-   `ensure_no_std` job, because the crates that the `multi-proof` workspace
-   builds carry no `no_std` markers. The coverage job uses `--workspace`,
-   because `multi-proof` is a workspace itself.
-2. Install the app on `multi-proof` through `Repository access`.
-3. Uncomment the `multi-proof` service block in `docker-compose.yaml`.
-4. Run `docker compose up -d`.
+2. Change the `on:` trigger branches from `main` to `master`. The default
+   branch is `master`, so the current `main` triggers never fire.
+3. Keep the miri, fuzz, deny, and msrv jobs. The image supports them
+   natively: `nightly` with `miri`, `cargo-fuzz`, `cargo-deny`, and
+   `cargo-audit` are baked in, and the guarded `cargo install` steps become
+   no-ops.
+4. Point the msrv job at `1.99.1`: change
+   `rustup toolchain install 1.88.0 --profile minimal --component clippy`
+   and the `cargo +1.88.0` invocations to `1.99.1`, matching the
+   `rust-version = "1.99.1"` in the manifests. The baked toolchain makes the
+   install a no-op; only the `clippy` component still downloads once on the
+   first run, because the image installs `1.99.1` minimal without clippy.
 
 ### First-run check
 
-1. Push one workflow change to a small repo, for example `multi-util`.
+1. Push one workflow change to a small repo, for example `denyfs`.
 2. In the Actions tab, open the run and check the job page. The runner name
-   must show `multi-util-r1`, not a GitHub-hosted runner.
-3. Run the job a second time. The two `cargo install` steps now skip, and the
+   must show `denyfs-r1`, not a GitHub-hosted runner.
+3. Run the job a second time. The guarded install steps now skip, and the
    build reuses the persistent build directory.
 
 ## Operations
@@ -335,8 +384,8 @@ caching, so the pin moves only through a deliberate rebuild.
    leading `v`.
 3. Build and push:
    ```bash
-   docker build -t ghcr.io/cryptidtech/multi-runner:latest .
-   docker push ghcr.io/cryptidtech/multi-runner:latest
+   docker build -t ghcr.io/dhuseby/runner:latest .
+   docker push ghcr.io/dhuseby/runner:latest
    ```
 4. Recreate the fleet on the new image:
    ```bash
@@ -349,7 +398,7 @@ App key rotation — two-key overlap:
    key`. Both keys work during the overlap.
 2. Install the new key over the old file:
    ```bash
-   sudo install -o root -g root -m 0600 ~/Downloads/<app>.<DATE>.private-key.pem /srv/secrets/multi-runner/github-app.pem
+   sudo install -o root -g root -m 0600 ~/Downloads/<app>.<DATE>.private-key.pem /srv/secrets/runner/github-app.pem
    ```
    Then delete the downloaded copy from `~/Downloads`, as in Part 2.
 3. Recreate the fleet:
@@ -373,7 +422,7 @@ Renew the ghcr PAT before it expires. It is separate from the runner path.
 Read the sccache hit rate from any runner:
 
 ```bash
-docker exec multi-base-r1 sccache --show-stats
+docker exec cruzr-r1 sccache --show-stats
 ```
 
 Read the stats right after a job. A freshly restarted container reports zero.
@@ -398,28 +447,26 @@ little re-work. If disk still grows, look at the Docker image cache under
 
 ### Toolchain drift and writable-layer growth
 
-`dtolnay/rust-toolchain@nightly` resolves the nightly of the day. A drifted
-download lands in the container writable layer, which also grows slowly from
-other writes. Both fix the same way:
+Jobs that use the baked toolchains download nothing: `nightly` and `miri`
+ship in the image, which removes the old source of writable-layer growth
+from job-time installs. A job that requests a toolchain version the image
+lacks — a new stable, or a future MSRV bump — still downloads it into the
+container writable layer, which also grows slowly from other writes. Both
+fix the same way:
 
 ```bash
 docker compose up -d --force-recreate
 ```
 
-To keep nightly stable across rebuilds, pin it with a dated toolchain spec in
-the image, or accept the one-time download on the first affected job.
+To stop the drift permanently, pin the new version in the image: change the
+toolchain line in the `Dockerfile`, rebuild, and push as in Part 3.
 
 ### Memory capacity
 
-If a coverage job reaches its swap allowance and slows down, raise that one
-service. Set `mem_limit: '4g'` and `memswap_limit: '8g'` on that service, then
-run `docker compose up -d <service>` to recreate it. Watch the totals with
+If a job reaches its swap allowance and slows down, raise that one service.
+Set `mem_limit: '4g'` and `memswap_limit: '8g'` on that service, then run
+`docker compose up -d <service>` to recreate it. Watch the totals with
 `docker stats` and keep the fleet near 12 containers or fewer.
-
-### Codecov on public repos
-
-The sibling repos are public. The `codecov/codecov-action@v4` upload runs
-without a token for public repos, so no token setup exists on this path.
 
 ## Troubleshooting
 
@@ -429,10 +476,11 @@ without a token for public repos, so no token setup exists on this path.
 | `HTTP 401 from the access-token endpoint` | The key does not match the Client ID | Re-download the key and repeat the Part 2 steps, and check `CLIENT_ID` |
 | `HTTP 401 from the registration-token endpoint` | The installation token was rejected; rare and usually transient | Run `docker compose up -d <service>` again; if it repeats, check the app installation and `INSTALLATION_ID` |
 | `HTTP 404 from the access-token endpoint` | Wrong `INSTALLATION_ID`, or the app is not installed on that repo | Check the Installation ID and the app `Repository access` |
+| `HTTP 404 from the registration-token endpoint` | The repo does not exist under `github.com/dhuseby` yet, or the app is not installed on it | Push the repo or unhide it, and check the app `Repository access` |
 | `HTTP 403 from the access-token endpoint` | The app lacks the `Administration` permission | Set `Administration` to `Read and write` in the app settings |
 | `HTTP 403 from the registration-token endpoint` | The app lacks the `Administration` permission | Set `Administration` to `Read and write` in the app settings |
 | Containers exit in a loop with a missing-key message | The key file is missing, empty, or unreadable | Repeat the Part 2 steps, then `docker compose down` and `docker compose up -d` |
-| A coverage job slows down or dies | The job hit its swap allowance | Raise `mem_limit` and `memswap_limit` for that service |
+| A job slows down or dies | The job hit its swap allowance | Raise `mem_limit` and `memswap_limit` for that service |
 | One job misbehaves only under sccache | A compile is not cache-safe | Set `RUSTC_WRAPPER: ''` in that step's `env:` so cargo skips the wrapper for that job |
 | `rust-lld: cannot open crtn.o` or `linker 'cc' not found` | The image lost its linker packages | Run `gcc --version` in a fresh container; if it fails, rebuild the image |
 | A runner shows `Offline` in the UI | The container stopped | `docker compose logs <service>`, then `docker compose up -d <service>`. The `--replace` registration clears the stale entry |
