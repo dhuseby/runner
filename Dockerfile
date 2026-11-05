@@ -74,16 +74,14 @@ RUN arch=$(dpkg --print-architecture) && \
         "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${arch}" && \
     chmod +x /usr/local/bin/yq
 
-# Install AWS CLI v2 (used by daily-full-interop.yml for S3 uploads)
-RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
-    unzip -q /tmp/awscliv2.zip -d /tmp/aws-install && \
-    /tmp/aws-install/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli && \
-    rm -rf /tmp/awscliv2.zip /tmp/aws-install
-
 # ─────────────────────────────────────────────────────────────
-# Rust toolchains pinned to what the multi-* CI workflows request:
-# stable (rustfmt, clippy, llvm-tools-preview), the pinned 1.99.0 MSRV,
-# and nightly with the thumbv6m-none-eabi no_std target.
+# Rust toolchains for the CI images of cruzr, denyfs, gold-vault,
+# and wide-log. stable is the default toolchain and carries the
+# rustfmt and clippy components every repo formats and lints with.
+# All four repos set rust-version 1.99.1 in their manifests, so the
+# 1.99.1 MSRV toolchain is preinstalled here and every CI job compiles
+# on the same compiler. wide-log's miri job needs the miri component
+# on nightly.
 # Toolchain binaries live in the image; build caches live on /srv/cache.
 # ─────────────────────────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -91,14 +89,14 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN curl -fsSL "https://sh.rustup.rs" | sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable && \
-    rustup component add --toolchain stable rustfmt clippy llvm-tools-preview && \
-    rustup toolchain install 1.99.0 --profile minimal && \
-    rustup toolchain install nightly --profile minimal && \
-    rustup target add --toolchain nightly thumbv6m-none-eabi && \
+    rustup component add --toolchain stable rustfmt clippy && \
+    rustup toolchain install 1.99.1 --profile minimal && \
+    rustup toolchain install nightly --profile minimal --component miri && \
     rustup default stable
 
-# Coverage and audit CLIs used by the multi-* CI workflows
-RUN cargo install --locked cargo-llvm-cov cargo-audit
+# Supply-chain CLIs: wide-log runs cargo-deny and cargo-fuzz, and
+# cargo-audit scans its lockfiles against the RustSec advisory database.
+RUN cargo install --locked cargo-deny cargo-fuzz cargo-audit
 
 # Shared compile cache server for all runner containers. The binary ships
 # in the image; the cache content itself lives on the host cache mount.
