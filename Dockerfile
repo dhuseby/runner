@@ -28,11 +28,18 @@ RUN apt-get update && \
     # coverage executables, even when the crate contains no C code.
     # `libc6-dev` supplies the C start files and linker scripts that `gcc`
     # only Recommends, and this install runs with --no-install-recommends.
+    # `make`, `cmake`, and `pkg-config` drive the C build systems that
+    # `-sys` crate build scripts invoke: tikv-jemalloc-sys runs autotools
+    # configure and then `make`, and aws-lc-sys (the rustls crypto provider
+    # reached through the cruzr graph) drives CMake, whose default
+    # generator also runs `make`. `pkg-config` locates preinstalled C
+    # libraries so crates link system libs instead of vendoring.
     # `openssl` is the command-line tool used to sign GitHub App JWTs.
     apt-get update && \
     apt-get install -y --no-install-recommends \
         bc \
         ca-certificates \
+        cmake \
         containerd.io \
         coreutils \
         docker-ce \
@@ -52,10 +59,12 @@ RUN apt-get update && \
         libicu76 \
         libunwind8 \
         libuuid1 \
+        make \
         openssh-client \
         openssl \
         pandoc \
         patch \
+        pkg-config \
         tar \
         wget \
         unzip \
