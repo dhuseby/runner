@@ -81,7 +81,8 @@ RUN arch=$(dpkg --print-architecture) && \
 # All four repos set rust-version 1.99.1 in their manifests, so the
 # 1.99.1 MSRV toolchain is preinstalled here and every CI job compiles
 # on the same compiler. wide-log's miri job needs the miri component
-# on nightly.
+# on nightly. The coverage job in every repo runs cargo-llvm-cov, so
+# stable also carries llvm-tools-preview, its instrumentation source.
 # Toolchain binaries live in the image; build caches live on /srv/cache.
 # ─────────────────────────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -89,14 +90,15 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN curl -fsSL "https://sh.rustup.rs" | sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable && \
-    rustup component add --toolchain stable rustfmt clippy && \
+    rustup component add --toolchain stable rustfmt clippy llvm-tools-preview && \
     rustup toolchain install 1.99.1 --profile minimal && \
     rustup toolchain install nightly --profile minimal --component miri && \
     rustup default stable
 
-# Supply-chain CLIs: wide-log runs cargo-deny and cargo-fuzz, and
-# cargo-audit scans its lockfiles against the RustSec advisory database.
-RUN cargo install --locked cargo-deny cargo-fuzz cargo-audit
+# Supply-chain and coverage CLIs: the audit job in every repo runs
+# cargo-audit against its lockfiles, wide-log's ci.yml runs cargo-deny
+# and cargo-fuzz, and the coverage job in every repo runs cargo-llvm-cov.
+RUN cargo install --locked cargo-deny cargo-fuzz cargo-audit cargo-llvm-cov
 
 # Shared compile cache server for all runner containers. The binary ships
 # in the image; the cache content itself lives on the host cache mount.
