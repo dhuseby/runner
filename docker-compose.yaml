@@ -38,8 +38,8 @@ x-runner-common: &runner-common
 # for those exist.
 x-runner-env: &runner-env
   RUNNER_SCOPE: 'repo'
-  CLIENT_ID: 'Iv1.0000000000000000'
-  INSTALLATION_ID: '0000000'
+  CLIENT_ID: 'Iv23liU1aCBfiZRQF3IB'
+  INSTALLATION_ID: '179067147'
   LABELS: 'self-hosted,linux,x64,ephemeral'
 
 services:
